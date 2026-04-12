@@ -1,0 +1,8 @@
+version: 2
+
+sources:
+  - name: cdc
+    schema: public
+    tables:
+      - name: customers
+      - name: orders

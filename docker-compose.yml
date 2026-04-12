@@ -1,0 +1,92 @@
+version: '3.8'
+
+services:
+  source_db:
+    image: postgres:15
+    container_name: source_db
+    environment:
+      POSTGRES_DB: source
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./source_db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    command: ["postgres", "-c", "wal_level=logical"]
+
+  target_db:
+    image: postgres:15
+    container_name: target_db
+    environment:
+      POSTGRES_DB: target
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5434:5432"
+
+  redpanda:
+    image: redpandadata/redpanda:latest
+    container_name: redpanda
+    command:
+      - redpanda start
+      - --smp 1
+      - --memory 512M
+      - --overprovisioned
+      - --kafka-addr PLAINTEXT://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+      - --advertise-kafka-addr PLAINTEXT://redpanda:29092,OUTSIDE://localhost:9092
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+
+  debezium:
+    image: debezium/connect:2.5
+    container_name: debezium
+    environment:
+      BOOTSTRAP_SERVERS: redpanda:29092
+      GROUP_ID: 1
+      CONFIG_STORAGE_TOPIC: debezium_configs
+      OFFSET_STORAGE_TOPIC: debezium_offsets
+      STATUS_STORAGE_TOPIC: debezium_status
+    ports:
+      - "8083:8083"
+    depends_on:
+      - source_db
+      - redpanda
+
+  consumer:
+    build: ./consumer
+    container_name: consumer
+    depends_on:
+      - redpanda
+      - target_db
+    environment:
+      KAFKA_BROKER: redpanda:29092
+      TARGET_DB_HOST: target_db
+      TARGET_DB_PORT: 5432
+      TARGET_DB_NAME: target
+      TARGET_DB_USER: postgres
+      TARGET_DB_PASSWORD: postgres
+    restart: on-failure
+
+  airflow:
+    image: apache/airflow:2.8.1-python3.11
+    container_name: airflow
+    environment:
+      AIRFLOW__CORE__EXECUTOR: SequentialExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////opt/airflow/airflow.db
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: admin
+      _AIRFLOW_WWW_USER_PASSWORD: admin
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+    ports:
+      - "8085:8080"
+    command: airflow standalone
+    restart: on-failure
+
+networks:
+  default:
+    name: cdc_network
